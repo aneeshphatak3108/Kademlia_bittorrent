@@ -1,0 +1,5 @@
+-We are building a Kademlia based Bit Torrent implementation.
+-Scope of the project ignores NAT and assumes that the peers are connected to same WIfi
+-This project is essentially divided in 2 layers. The lower layer is the kademlia distributed hash table and upper layer is Bit torrent.
+-We first develop the lower pure Kademlia layer and after that build bittorrent layer on top of that.
+-This kademlia layer just implements the DHT with arbitrary key and values and exposes the 4 standard apis

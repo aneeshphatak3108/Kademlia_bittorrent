@@ -1,0 +1,5 @@
+Metadata-Version: 2.1
+Name: kademlia-dht
+Version: 0.1.0
+Summary: Pure Kademlia DHT layer (lower layer of a Kademlia-based BitTorrent implementation)
+Requires-Python: >=3.8

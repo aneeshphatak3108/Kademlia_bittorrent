@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kademlia-dht"
+version = "0.1.0"
+description = "Pure Kademlia DHT layer (lower layer of a Kademlia-based BitTorrent implementation)"
+requires-python = ">=3.8"
+
+[tool.setuptools]
+packages = ["kademlia", "kademlia.rpc"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
