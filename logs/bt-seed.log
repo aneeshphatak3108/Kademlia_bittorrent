@@ -1,0 +1,2 @@
+2026-09-24 10:36:13,538 [0.0.0.0:9000] INFO bittorrent.session: session for payload.bin listening on 0.0.0.0:6881 (62/62 pieces)
+2026-09-24 10:54:23,154 [0.0.0.0:9000] INFO bittorrent.session: session for payload.bin listening on 0.0.0.0:6881 (62/62 pieces)

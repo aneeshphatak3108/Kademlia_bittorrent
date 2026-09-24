@@ -1,7 +1,8 @@
 """Tunable constants for the Kademlia DHT layer, per the original paper / BEP 5 conventions."""
 
 ID_BITS = 160  # SHA-1 keyspace
-K = 20  # bucket size / replication factor
+K = 3
+  # bucket size / replication factor
 ALPHA = 3  # lookup concurrency
 
 RPC_TIMEOUT = 5.0  # seconds, per query attempt

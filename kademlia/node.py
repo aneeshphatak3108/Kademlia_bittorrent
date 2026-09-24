@@ -87,6 +87,11 @@ class Node:
         self._refresh_task: Optional[asyncio.Task] = None
         self._expiry_task: Optional[asyncio.Task] = None
 
+        # Handlers for query types registered by layers built on top of this
+        # DHT (see kademlia.rpc.messages.register_query). Consulted only after
+        # every built-in query type has been ruled out.
+        self._ext_query_handlers = {}
+
     # -- lifecycle --
 
     async def start(self) -> None:
@@ -267,8 +272,34 @@ class Node:
             closest = self.routing_table.find_closest(NodeID(msg.key))
             return FindValueResponse(tid=msg.tid, responder_id=self.id, nodes=closest)
 
+        handler = self._ext_query_handlers.get(type(msg))
+        if handler is not None:
+            return handler(msg, addr)
+
+        # A registered message type with no handler on this node (e.g. a
+        # BitTorrent announce reaching a node that isn't running the peer
+        # discovery service). Answer with "method unknown" rather than staying
+        # silent, so the caller fails immediately instead of waiting out its
+        # full timeout and retries.
         logger.warning("unhandled query type: %r", msg)
-        return None
+        return ErrorMessage(
+            tid=msg.tid, code=204, message=f"Method Unknown: {type(msg).__name__}"
+        )
+
+    def register_query_handler(self, cls: type, handler) -> None:
+        """Handle an extension query type (see kademlia.rpc.messages.register_query).
+
+        `handler(msg, addr)` returns the response to send back, or None.
+        """
+        self._ext_query_handlers[cls] = handler
+
+    async def send_extension_query(self, contact: Contact, build_query) -> Response:
+        """Send a registered extension RPC, reusing this node's timeout/retry policy.
+
+        `build_query(tid)` builds the query message. Raises RPCTimeoutError or
+        RPCErrorResponse on failure, like the built-in RPC wrappers do.
+        """
+        return await self._send_with_retry(contact, build_query)
 
     # -- background maintenance --
 

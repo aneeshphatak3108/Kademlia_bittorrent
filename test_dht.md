@@ -75,7 +75,73 @@ always cleans up (terminates) every process it started, even on failure.
 Logs for each node process land in `logs/node_<port>.log` — check these
 first if the harness fails and you need to see what a specific node did.
 
-## 3. Driving a single node by hand
+## 3. Docker multi-container harness (Tier 3)
+
+Launches N Kademlia DHT nodes as real Docker containers on a shared Docker
+network, each with its own container IP and filesystem — unlike Tier 1/2,
+which run every "node" on `127.0.0.1`, distinguished only by port. The whole
+repo is bind-mounted into every container, so code edits on the host are
+live immediately, no image rebuild needed between runs.
+
+### One-time: Docker permission
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+Then fully log out and back in (group membership needs a fresh session) —
+or just prefix every command below with `sudo` instead. Verify with:
+
+```bash
+docker ps
+```
+
+### Run it
+
+```bash
+python scripts/docker_harness.py                # default: 8-node mesh
+python scripts/docker_harness.py --nodes 15      # bigger mesh
+```
+
+No venv needed for this one — it only shells out to the `docker` CLI, no
+project imports run on the host side.
+
+It will:
+1. Check `docker info` succeeds (fails fast with a clear message if
+   permissions/daemon aren't right).
+2. Build the `kademlia-dht-node:latest` image from the `Dockerfile` — first
+   run pulls `python:3.8-slim` and is slower; later runs are cached and fast.
+3. Create a fresh Docker network (`kademlia-test-net`), removing any stale
+   one left over from a previous run first.
+4. Start `node0` (seed) then `node1..node{N-1}` (each bootstrapping off the
+   previous), printing each one's real node ID as it comes up.
+5. Store a value on `node0`, fetch it from the last node — proves it
+   round-tripped across real container-to-container UDP, not just different
+   ports on the same loopback address.
+6. `docker kill` a couple of nodes mid-test (immediate `SIGKILL`, no graceful
+   shutdown — a harsher, more realistic "peer just vanished" than Tier 2's
+   `SIGTERM`) and confirm a survivor can still look up the value.
+7. Tear everything down in a `finally` — every container and the network
+   removed, regardless of pass or fail.
+
+Logs for each node land in `logs/<name>.log` on the host (same `logs/`
+directory Tier 2 uses, since the whole repo is bind-mounted) — check these
+first if something fails.
+
+### Poking around manually while a run is in progress
+
+Containers are torn down as soon as the script exits, so this only works
+mid-run (add a `time.sleep()` inside `run_scenarios` in
+`scripts/docker_harness.py` temporarily if you want a window to explore):
+
+```bash
+docker ps                                          # one container per node
+docker exec node0 python /app/ctl.py 9001 '{"cmd": "dump_routing_table"}'
+docker exec node3 python /app/ctl.py 9001 '{"cmd": "node_id"}'
+docker network inspect kademlia-test-net           # see each container's real IP
+```
+
+## 4. Driving a single node by hand
 
 Useful for manual exploration, or debugging something the automated tests
 don't cover. `scripts/run_node.py` starts one node and opens a small
@@ -97,7 +163,7 @@ Flags: `--host` (default `127.0.0.1`; the address the DHT's UDP socket binds
 to), `--port` (DHT UDP port), `--control-port` (TCP control port),
 `--control-host` (default `127.0.0.1`; the address the control channel binds
 to — stays localhost-only by default *even if* `--host` is a LAN IP, see
-section 4 below), `--bootstrap host:port[,host:port...]` (peers to join via —
+section 5 below), `--bootstrap host:port[,host:port...]` (peers to join via —
 omit for a seed node), `--log-file <path>` (optional).
 
 ### Send it commands
@@ -166,7 +232,7 @@ python -c "print(bytes.fromhex('68656c6c6f').decode())"  # text from hex
 Any unknown `cmd`, or a handler that raises, comes back as
 `{"ok": false, "error": "<message>"}` instead of crashing the connection.
 
-## 4. Running across multiple machines on the same WiFi
+## 5. Running across multiple machines on the same WiFi
 
 The wire protocol has no code-level restriction to a single machine — a
 node's address is always derived from the real UDP source address of the
@@ -224,7 +290,7 @@ in the mesh.
 
 ### Step 4 — verify it actually crossed the network
 
-Run `ctl.py` (see section 3) **on machine A** to store a value, then run it
+Run `ctl.py` (see section 4) **on machine A** to store a value, then run it
 **on machine B** to fetch it:
 
 ```bash
@@ -256,7 +322,7 @@ python ctl.py 9001 '{"cmd": "get", "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   firewall change on your machines can fix this — it has to be disabled on
   the router, or you need a network without it.
 
-## 5. Quick sanity checklist
+## 6. Quick sanity checklist
 
 If you've changed something and want a fast "did I break anything" pass:
 
@@ -264,30 +330,6 @@ If you've changed something and want a fast "did I break anything" pass:
 pytest tests/ -q && python scripts/harness.py --nodes 10
 ```
 
-Both exit 0 with no failures if the DHT layer is healthy.
-
-
-
-Machine A (say its IP is 192.168.29.155) — this is the seed, so no --bootstrap:
-
-# Terminal 1 on machine A — start the node, leave this running
-cd /home/aneesh/Desktop/Bit_torrent_grind
-source .venv/bin/activate
-python scripts/run_node.py --host 192.168.29.155 --port 9000 --control-port 9001
-
-# Terminal 2 on machine A — once it's up, store a value
-python ctl.py 9001 '{"cmd": "store", "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "value": "68656c6c6f"}'
-
-Machine B (say its IP is 192.168.29.200) — joins via A's IP:
-
-# Terminal 1 on machine B — start the node, bootstrapping off A
-cd /home/aneesh/Desktop/Bit_torrent_grind
-source .venv/bin/activate
-python scripts/run_node.py --host 192.168.29.200 --port 9000 --control-port 9001 --bootstrap 192.168.29.155:9000
-
-# Terminal 2 on machine B — fetch the value A stored
-python ctl.py 9001 '{"cmd": "get", "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
-
-Two things this requires that aren't in those commands themselves:
-1. ctl.py (the small helper script from test_dht.md section 3) needs to exist on both machines — it's just a few lines, copy it over.
-2. Machine B must be started after machine A is already up and listening (since B's --bootstrap dials A directly on startup).`
+Both exit 0 with no failures if the DHT layer is healthy. Add
+`python scripts/docker_harness.py` to that for a deeper (slower) check that
+also exercises real per-container IPs.

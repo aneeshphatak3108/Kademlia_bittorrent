@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import binascii
 import json
+import socket
 import sys
 from typing import Optional
 
@@ -35,7 +36,12 @@ def parse_bootstrap(spec: Optional[str]) -> list:
         if not entry:
             continue
         host, port = entry.rsplit(":", 1)
-        contacts.append(Contact(node_id=NodeID.random(), ip=host, port=int(port)))
+        # Raw UDP sendto() needs an already-numeric address -- no DNS resolution
+        # happens further down the stack. Resolving here (once, at startup) is
+        # a no-op for an already-numeric IP, and makes a resolvable hostname
+        # (e.g. a Docker container/service name) work as a --bootstrap target.
+        resolved_ip = socket.gethostbyname(host)
+        contacts.append(Contact(node_id=NodeID.random(), ip=resolved_ip, port=int(port)))
     return contacts
 
 

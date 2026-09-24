@@ -129,6 +129,69 @@ _QUERY_METHOD_NAMES = {
     FindValueQuery: b"find_value",
 }
 
+# -- extension registry ------------------------------------------------------
+#
+# Layers built on top of this DHT (e.g. the BitTorrent layer's ANNOUNCE_PEER /
+# GET_PEERS) register their own RPCs here instead of this module hardcoding
+# knowledge of them -- `kademlia/` stays a generic arbitrary-key/value DHT.
+#
+# Built-ins are always tried first, so registering an extension cannot change
+# any existing behaviour. Extension *responses* carry an explicit `rt` (response
+# type) discriminator, which the four built-in responses never emit, so response
+# decoding stays unambiguous regardless of registration order.
+
+RESPONSE_TYPE_KEY = b"rt"
+
+_ext_query_encoders = {}  # type -> (method: bytes, fn(msg) -> args dict without "id")
+_ext_query_decoders = {}  # method: bytes -> fn(tid, sender_id, args) -> Query
+_ext_response_encoders = {}  # type -> (rt: bytes, fn(msg) -> r dict without "id"/"rt")
+_ext_response_decoders = {}  # rt: bytes -> fn(tid, responder_id, r) -> Response
+
+# Every response class, built-in or registered. The transport uses this to tell
+# a reply (resolve the pending future) from an incoming query (dispatch to a
+# handler) without hardcoding the set of known types.
+_response_classes = {PingResponse, StoreResponse, FindNodeResponse, FindValueResponse}
+
+
+def is_response(msg: "Message") -> bool:
+    return type(msg) in _response_classes
+
+
+def register_query(method: bytes, cls: type, to_args, from_args) -> None:
+    """Register an extension query RPC.
+
+    `to_args(msg)` returns the `a` payload minus the sender `id`;
+    `from_args(tid, sender_id, a)` rebuilds the message. Envelope framing
+    (t/y/q/a/id) stays owned by this module.
+    """
+    _ext_query_encoders[cls] = (method, to_args)
+    _ext_query_decoders[method] = from_args
+
+
+def register_response(rt: bytes, cls: type, to_r, from_r) -> None:
+    """Register an extension response, discriminated by `rt`."""
+    _ext_response_encoders[cls] = (rt, to_r)
+    _ext_response_decoders[rt] = from_r
+    _response_classes.add(cls)
+
+
+def _encode_extension(msg: Message):
+    entry = _ext_query_encoders.get(type(msg))
+    if entry is not None:
+        method, to_args = entry
+        args = {b"id": msg.sender_id.bytes}
+        args.update(to_args(msg))
+        return {b"t": msg.tid, b"y": b"q", b"q": method, b"a": args}
+
+    entry = _ext_response_encoders.get(type(msg))
+    if entry is not None:
+        rt, to_r = entry
+        r = {b"id": msg.responder_id.bytes, RESPONSE_TYPE_KEY: rt}
+        r.update(to_r(msg))
+        return {b"t": msg.tid, b"y": b"r", b"r": r}
+
+    return None
+
 
 def encode(msg: Message) -> bytes:
     if isinstance(msg, PingQuery):
@@ -176,7 +239,9 @@ def encode(msg: Message) -> bytes:
     elif isinstance(msg, ErrorMessage):
         envelope = {b"t": msg.tid, b"y": b"e", b"e": [msg.code, msg.message.encode("utf-8")]}
     else:
-        raise MalformedMessageError(f"unknown message type: {type(msg)!r}")
+        envelope = _encode_extension(msg)
+        if envelope is None:
+            raise MalformedMessageError(f"unknown message type: {type(msg)!r}")
     return bencode_encode(envelope)
 
 
@@ -225,6 +290,10 @@ def _decode_query(envelope: dict, tid: bytes) -> Query:
     if q == b"find_value":
         key = _require_bytes(a, b"key")
         return FindValueQuery(tid=tid, sender_id=sender_id, key=key)
+
+    decoder = _ext_query_decoders.get(q)
+    if decoder is not None:
+        return decoder(tid, sender_id, a)
     raise MalformedMessageError(f"unknown query method: {q!r}")
 
 
@@ -233,6 +302,13 @@ def _decode_response(envelope: dict, tid: bytes) -> Response:
     if not isinstance(r, dict):
         raise MalformedMessageError("response missing 'r' dict")
     responder_id = NodeID(_require_bytes(r, b"id"))
+
+    if RESPONSE_TYPE_KEY in r:
+        rt = _require_bytes(r, RESPONSE_TYPE_KEY)
+        decoder = _ext_response_decoders.get(rt)
+        if decoder is None:
+            raise MalformedMessageError(f"unknown response type: {rt!r}")
+        return decoder(tid, responder_id, r)
 
     if b"value" in r:
         return FindValueResponse(tid=tid, responder_id=responder_id, value=_require_bytes(r, b"value"))

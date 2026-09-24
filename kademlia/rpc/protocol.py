@@ -63,7 +63,7 @@ class KademliaProtocol(asyncio.DatagramProtocol):
 
         if isinstance(msg, ErrorMessage):
             self._resolve_pending(msg.tid, exc=RPCErrorResponse(msg))
-        elif isinstance(msg, (messages.PingResponse, messages.StoreResponse, messages.FindNodeResponse, messages.FindValueResponse)):
+        elif messages.is_response(msg):
             self._resolve_pending(msg.tid, result=(msg, addr))
         else:
             asyncio.get_event_loop().create_task(self._handle_query(msg, addr))
